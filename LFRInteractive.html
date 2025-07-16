@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive LFR Score Simulator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc; /* tailwind gray-50 */
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .slider-label {
+            min-width: 150px;
+            font-weight: 500;
+        }
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 8px;
+            background: #e2e8f0; /* tailwind slate-200 */
+            border-radius: 5px;
+            outline: none;
+            opacity: 0.7;
+            transition: opacity .2s;
+        }
+        input[type="range"]:hover {
+            opacity: 1;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #3b82f6; /* tailwind blue-500 */
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #3b82f6; /* tailwind blue-500 */
+            cursor: pointer;
+            border-radius: 50%;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto bg-white p-6 rounded-2xl shadow-lg">
+        <h1 class="text-2xl md:text-3xl font-bold text-gray-800 mb-2">Interactive LFR Score Simulator</h1>
+        <p class="text-gray-600 mb-6">Adjust the weights with the sliders to see how the final LFR scores and rankings change in real-time.</p>
+
+        <!-- Sliders for weights -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 mb-8">
+            <div class="slider-container">
+                <label for="sparseWeight" class="slider-label">α (Sparse) Weight:</label>
+                <input type="range" id="sparseWeight" min="0" max="1" step="0.05" value="0.4">
+                <span id="sparseWeightValue" class="font-semibold w-12 text-right">0.40</span>
+            </div>
+            <div class="slider-container">
+                <label for="denseWeight" class="slider-label">β (Dense) Weight:</label>
+                <input type="range" id="denseWeight" min="0" max="1" step="0.05" value="0.3">
+                <span id="denseWeightValue" class="font-semibold w-12 text-right">0.30</span>
+            </div>
+            <div class="slider-container">
+                <label for="popularityWeight" class="slider-label">γ (Popularity) Weight:</label>
+                <input type="range" id="popularityWeight" min="0" max="1" step="0.05" value="0.2">
+                <span id="popularityWeightValue" class="font-semibold w-12 text-right">0.20</span>
+            </div>
+            <div class="slider-container">
+                <label for="recencyWeight" class="slider-label">δ (Recency) Weight:</label>
+                <input type="range" id="recencyWeight" min="0" max="1" step="0.05" value="0.1">
+                <span id="recencyWeightValue" class="font-semibold w-12 text-right">0.10</span>
+            </div>
+        </div>
+
+        <!-- Chart container with increased height -->
+        <div class="w-full" style="height: 500px;">
+            <canvas id="lfrChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        // --- DATA SETUP ---
+        const chunkData = [
+            { id: 'A', sparse: 0.9, dense: 0.5, popularity: 0.3, recency: 0.4 },
+            { id: 'B', sparse: 0.4, dense: 0.9, popularity: 0.6, recency: 0.5 },
+            { id: 'C', sparse: 0.7, dense: 0.4, popularity: 0.7, recency: 0.3 },
+            { id: 'D', sparse: 0.2, dense: 0.4, popularity: 0.6, recency: 0.6 },
+            { id: 'E', sparse: 0.5, dense: 0.7, popularity: 0.5, recency: 0.2 }
+        ];
+
+        // --- CHART.JS SETUP ---
+        const ctx = document.getElementById('lfrChart').getContext('2d');
+        let lfrChart;
+        let sortedCalculatedData = []; // To be accessible by tooltip
+
+        // --- SLIDER REFERENCES ---
+        const sparseSlider = document.getElementById('sparseWeight');
+        const denseSlider = document.getElementById('denseWeight');
+        const popularitySlider = document.getElementById('popularityWeight');
+        const recencySlider = document.getElementById('recencyWeight');
+
+        const sparseValueSpan = document.getElementById('sparseWeightValue');
+        const denseValueSpan = document.getElementById('denseWeightValue');
+        const popularityValueSpan = document.getElementById('popularityWeightValue');
+        const recencyValueSpan = document.getElementById('recencyWeightValue');
+
+        // --- COLOR DEFINITIONS ---
+        const colors = {
+            sparse: { light: 'rgba(191, 219, 254, 0.7)', dark: 'rgba(59, 130, 246, 1)' },
+            dense: { light: 'rgba(209, 250, 229, 0.7)', dark: 'rgba(16, 185, 129, 1)' },
+            popularity: { light: 'rgba(224, 231, 255, 0.7)', dark: 'rgba(99, 102, 241, 1)' },
+            recency: { light: 'rgba(254, 249, 195, 0.7)', dark: 'rgba(234, 179, 8, 1)' },
+            lfrScore: 'rgba(15, 23, 42, 1)'
+        };
+
+        // --- CHART INITIALIZATION ---
+        function initializeChart() {
+            lfrChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: [], // Populated by updateChart
+                    datasets: [
+                        // --- Weighted Scores (Dark Bars) ---
+                        { label: 'Sparse (weighted)', backgroundColor: colors.sparse.dark, data: [], stack: 'sparse' },
+                        { label: 'Dense (weighted)', backgroundColor: colors.dense.dark, data: [], stack: 'dense' },
+                        { label: 'Popularity (weighted)', backgroundColor: colors.popularity.dark, data: [], stack: 'popularity' },
+                        { label: 'Recency (weighted)', backgroundColor: colors.recency.dark, data: [], stack: 'recency' },
+                        
+                        // --- Remainder Scores (Light Bars) ---
+                        { label: 'Sparse (remainder)', backgroundColor: colors.sparse.light, data: [], stack: 'sparse' },
+                        { label: 'Dense (remainder)', backgroundColor: colors.dense.light, data: [], stack: 'dense' },
+                        { label: 'Popularity (remainder)', backgroundColor: colors.popularity.light, data: [], stack: 'popularity' },
+                        { label: 'Recency (remainder)', backgroundColor: colors.recency.light, data: [], stack: 'recency' },
+
+                        // --- Final LFR Score (Line) ---
+                        { type: 'line', label: 'LFR Score', borderColor: colors.lfrScore, backgroundColor: colors.lfrScore, data: [], fill: false, tension: 0.1, pointRadius: 5, pointBackgroundColor: colors.lfrScore }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { grid: { display: false } }, // Stacking is now per-dataset
+                        y: {
+                            beginAtZero: true,
+                            max: 1.2,
+                            grid: { color: '#e2e8f0', borderDash: [5, 5] }
+                        }
+                    },
+                    plugins: {
+                        legend: { position: 'top', align: 'end' },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                title: function(context) {
+                                    // Show the Chunk ID as the title
+                                    return `Chunk ${context[0].label}`;
+                                },
+                                label: function(context) {
+                                    const currentChunkData = sortedCalculatedData[context.dataIndex];
+                                    if (!currentChunkData) return '';
+
+                                    const stack = context.dataset.stack;
+                                    if (stack) {
+                                        const transformed = currentChunkData[stack];
+                                        const weighted = currentChunkData.weightedScores[stack];
+                                        return [
+                                            `Component: ${stack.charAt(0).toUpperCase() + stack.slice(1)}`,
+                                            `  - Transformed: ${transformed.toFixed(3)}`,
+                                            `  - Weighted: ${weighted.toFixed(3)}`
+                                        ];
+                                    }
+                                    
+                                    if (context.dataset.type === 'line') {
+                                        return `LFR Score: ${context.parsed.y.toFixed(3)}`;
+                                    }
+                                    return '';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // --- CORE UPDATE LOGIC ---
+        function updateChart() {
+            const weights = {
+                sparse: parseFloat(sparseSlider.value),
+                dense: parseFloat(denseSlider.value),
+                popularity: parseFloat(popularitySlider.value),
+                recency: parseFloat(recencySlider.value)
+            };
+
+            sparseValueSpan.textContent = weights.sparse.toFixed(2);
+            denseValueSpan.textContent = weights.dense.toFixed(2);
+            popularityValueSpan.textContent = weights.popularity.toFixed(2);
+            recencyValueSpan.textContent = weights.recency.toFixed(2);
+
+            const calculatedData = chunkData.map(chunk => {
+                const weightedScores = {
+                    sparse: chunk.sparse * weights.sparse,
+                    dense: chunk.dense * weights.dense,
+                    popularity: chunk.popularity * weights.popularity,
+                    recency: chunk.recency * weights.recency
+                };
+                const remainderScores = {
+                    sparse: Math.max(0, chunk.sparse - weightedScores.sparse),
+                    dense: Math.max(0, chunk.dense - weightedScores.dense),
+                    popularity: Math.max(0, chunk.popularity - weightedScores.popularity),
+                    recency: Math.max(0, chunk.recency - weightedScores.recency)
+                };
+                const lfrScore = Object.values(weightedScores).reduce((sum, score) => sum + score, 0);
+                return { ...chunk, weightedScores, remainderScores, lfrScore };
+            });
+
+            calculatedData.sort((a, b) => b.lfrScore - a.lfrScore);
+            sortedCalculatedData = calculatedData; // Update global variable for tooltip
+
+            const labels = sortedCalculatedData.map(d => d.id);
+            const weightedSparse = sortedCalculatedData.map(d => d.weightedScores.sparse);
+            const weightedDense = sortedCalculatedData.map(d => d.weightedScores.dense);
+            const weightedPopularity = sortedCalculatedData.map(d => d.weightedScores.popularity);
+            const weightedRecency = sortedCalculatedData.map(d => d.weightedScores.recency);
+            
+            const remainderSparse = sortedCalculatedData.map(d => d.remainderScores.sparse);
+            const remainderDense = sortedCalculatedData.map(d => d.remainderScores.dense);
+            const remainderPopularity = sortedCalculatedData.map(d => d.remainderScores.popularity);
+            const remainderRecency = sortedCalculatedData.map(d => d.remainderScores.recency);
+
+            const lfrScores = sortedCalculatedData.map(d => d.lfrScore);
+
+            lfrChart.data.labels = labels;
+            // Weighted datasets (indices 0-3)
+            lfrChart.data.datasets[0].data = weightedSparse;
+            lfrChart.data.datasets[1].data = weightedDense;
+            lfrChart.data.datasets[2].data = weightedPopularity;
+            lfrChart.data.datasets[3].data = weightedRecency;
+            // Remainder datasets (indices 4-7)
+            lfrChart.data.datasets[4].data = remainderSparse;
+            lfrChart.data.datasets[5].data = remainderDense;
+            lfrChart.data.datasets[6].data = remainderPopularity;
+            lfrChart.data.datasets[7].data = remainderRecency;
+            // LFR Score line (index 8)
+            lfrChart.data.datasets[8].data = lfrScores;
+
+            lfrChart.update();
+        }
+
+        // --- EVENT LISTENERS ---
+        sparseSlider.addEventListener('input', updateChart);
+        denseSlider.addEventListener('input', updateChart);
+        popularitySlider.addEventListener('input', updateChart);
+        recencySlider.addEventListener('input', updateChart);
+
+        // --- INITIALIZE ---
+        window.onload = () => {
+            initializeChart();
+            updateChart();
+        };
+    </script>
+</body>
+</html>
